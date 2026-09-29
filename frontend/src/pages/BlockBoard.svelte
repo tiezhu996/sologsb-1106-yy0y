@@ -9,6 +9,7 @@
   import { blockStore } from '../stores/blockStore'
   import { carverStore } from '../stores/carverStore'
   import { draftStore } from '../stores/draftStore'
+  import { woodStore, type BlockDisposition } from '../stores/woodStore'
   import { useBlockOrder } from '../hooks/useBlockOrder'
   import { useCarverLoad } from '../hooks/useCarverLoad'
   import { validateColorSequence } from '../utils/seq'
@@ -30,11 +31,18 @@
   let selectedCarverId = $state('')
   let notice = $state('')
   let lastSync = $state('刚刚')
+  let scrapTarget = $state<Block | null>(null)
+  let scrapDisposition = $state<BlockDisposition>('退库')
+  let scrapReason = $state('')
 
   const draft = $derived($draftStore.find((item) => item.id === draftId) ?? null)
 
   onMount(() => {
-    void Promise.all([draftStore.load(), blockStore.load(), carverStore.load()])
+    void (async () => {
+      // 旧版片首次打开编排台：补成“历史无编号”，幂等
+      await woodStore.backfillLegacyBlocks(draftId)
+      await Promise.all([draftStore.load(), blockStore.load(), carverStore.load(), woodStore.load()])
+    })()
   })
 
   $effect(() => {
@@ -66,6 +74,10 @@
   }
 
   async function assignCarver(block: Block, carverName: string): Promise<void> {
+    if (block.state === '已作废') {
+      notice = '已作废版片不能再指派刻工。'
+      return
+    }
     const carver = $carverStore.find((item) => item.name === carverName)
     if (!carver) return
     await carverStore.assignBlock(block, carver.id)
@@ -74,6 +86,10 @@
   }
 
   async function markCarved(block: Block): Promise<void> {
+    if (block.state === '已作废') {
+      notice = '已作废版片不能标记刻成。'
+      return
+    }
     await blockStore.update(block.id, { state: '已刻成' })
     await carverStore.releaseBlock(block.id)
     const currentBlocks = get(blockStore).filter((item) => item.draftId === draftId)
@@ -145,6 +161,41 @@
     selectedCarverId = select.value
     void refreshCarverLoad(select.value)
   }
+
+  function sourceLabel(block: Block): string {
+    if (block.sourceKind === '历史无编号') return '历史旧版 · 无编号'
+    if (block.sourceKind === '批次') return block.sourceBatchNo ?? '批次未登记'
+    return '来源未登记'
+  }
+
+  function openScrapPanel(block: Block): void {
+    scrapTarget = block
+    scrapDisposition = block.sourceKind === '批次' ? '退库' : '损耗'
+    scrapReason = ''
+    notice = ''
+  }
+
+  function closeScrapPanel(): void {
+    scrapTarget = null
+    scrapReason = ''
+  }
+
+  async function confirmScrap(): Promise<void> {
+    if (!scrapTarget) return
+    if (!scrapReason.trim()) {
+      notice = '请先写清崩废、走版或重刻的作废原因。'
+      return
+    }
+    const result = await woodStore.scrapBlock(scrapTarget, scrapDisposition, scrapReason.trim())
+    if (!result.ok) {
+      notice = result.message
+      return
+    }
+    await Promise.all([blockStore.load(), carverStore.load(), woodStore.load()])
+    lastSync = result.message
+    notice = result.message
+    closeScrapPanel()
+  }
 </script>
 
 <svelte:head>
@@ -168,10 +219,10 @@
   </div>
 
   <section class="summary-strip four">
-    <div><span>版片总数</span><strong>{$orderedBlocks.length}</strong></div>
+    <div><span>版片总数</span><strong>{$orderedBlocks.filter((block) => block.state !== '已作废').length}</strong></div>
     <div><span>刻成率</span><strong>{$blockCarvedRate}%</strong></div>
     <div><span>在刻版片</span><strong>{$orderedBlocks.filter((block) => block.state === '在刻').length}</strong></div>
-    <div><span>需修版片</span><strong>{$orderedBlocks.filter((block) => block.defectNote).length}</strong></div>
+    <div><span>已作废</span><strong data-testid="count-scrapped">{$orderedBlocks.filter((block) => block.state === '已作废').length}</strong></div>
   </section>
 
   <div class="workbench-grid">
@@ -194,28 +245,33 @@
                 <th>色序</th>
                 <th>版片</th>
                 <th>木料 / 版厚</th>
+                <th>木料来源</th>
                 <th>刻工指派</th>
                 <th>状态</th>
-                <th>崩口与修补</th>
+                <th>崩口与作废</th>
               </tr>
             </thead>
             <tbody>
               {#each $orderedBlocks as block, blockIndex (block.id)}
-                <tr data-testid="row-block">
+                <tr data-testid="row-block" class:row-scrapped={block.state === '已作废'}>
                   <td class="sequence-cell">
-                    {#if sequenceDraft[block.id] !== undefined}
-                      <SeqInput
-                        bind:value={sequenceDraft[block.id]}
-                        existing={occupiedNumbers(block.id)}
-                        label="序号"
-                        testid={`field-colorNo-${block.id}`}
-                      />
+                    {#if block.state !== '已作废'}
+                      {#if sequenceDraft[block.id] !== undefined}
+                        <SeqInput
+                          bind:value={sequenceDraft[block.id]}
+                          existing={occupiedNumbers(block.id)}
+                          label="序号"
+                          testid={`field-colorNo-${block.id}`}
+                        />
+                      {/if}
+                      <button class="mini-button" type="button" onclick={() => saveSequence(block)}>存序号</button>
+                      <div class="order-buttons">
+                        <button type="button" disabled={blockIndex === 0} onclick={() => moveBlock(block, -1)}>上移</button>
+                        <button type="button" disabled={blockIndex === $orderedBlocks.length - 1} onclick={() => moveBlock(block, 1)}>下移</button>
+                      </div>
+                    {:else}
+                      <span class="tag">色序 {block.colorNo}</span>
                     {/if}
-                    <button class="mini-button" type="button" onclick={() => saveSequence(block)}>存序号</button>
-                    <div class="order-buttons">
-                      <button type="button" disabled={blockIndex === 0} onclick={() => moveBlock(block, -1)}>上移</button>
-                      <button type="button" disabled={blockIndex === $orderedBlocks.length - 1} onclick={() => moveBlock(block, 1)}>下移</button>
-                    </div>
                   </td>
                   <td>
                     <ColorSwatch colorNo={block.colorNo} blockName={block.blockName} />
@@ -225,21 +281,33 @@
                     <small>{block.thicknessMm} mm</small>
                   </td>
                   <td>
-                    <select
-                      data-testid={`field-carvedBy-${block.id}`}
-                      value={block.carvedBy}
-                      onchange={(event) => assignCarver(block, (event.currentTarget as HTMLSelectElement).value)}
-                    >
-                      <option value="">待指派</option>
-                      {#each $carverStore as carver}
-                        <option value={carver.name}>{carver.name} · {carver.specialty}</option>
-                      {/each}
-                    </select>
+                    <span class="tag source-tag {block.sourceKind === '历史无编号' ? 'source-legacy' : 'source-batch'}" data-testid={`source-${block.id}`}>
+                      {sourceLabel(block)}
+                    </span>
+                  </td>
+                  <td>
+                    {#if block.state === '已作废'}
+                      <small>{block.carvedBy || '—'}</small>
+                    {:else}
+                      <select
+                        data-testid={`field-carvedBy-${block.id}`}
+                        value={block.carvedBy}
+                        onchange={(event) => assignCarver(block, (event.currentTarget as HTMLSelectElement).value)}
+                      >
+                        <option value="">待指派</option>
+                        {#each $carverStore as carver}
+                          <option value={carver.name}>{carver.name} · {carver.specialty}</option>
+                        {/each}
+                      </select>
+                    {/if}
                   </td>
                   <td>
                     <span class="tag state-{block.state}">{block.state}</span>
-                    {#if block.state !== '已刻成' && block.state !== '已修版'}
+                    {#if block.state !== '已刻成' && block.state !== '已修版' && block.state !== '已作废'}
                       <button class="mini-button strong" type="button" onclick={() => markCarved(block)}>标刻成</button>
+                    {/if}
+                    {#if block.state !== '已作废'}
+                      <button class="mini-button danger-mini" data-testid={`scrap-${block.id}`} type="button" onclick={() => openScrapPanel(block)}>作废</button>
                     {/if}
                   </td>
                   <td>
@@ -248,12 +316,15 @@
                       rows="2"
                       bind:value={defectDraft[block.id]}
                       placeholder="崩口、补线或嵌木说明"
+                      disabled={block.state === '已作废'}
                     ></textarea>
-                    <button class="mini-button" type="button" onclick={() => saveDefect(block)}>存记录</button>
+                    {#if block.state !== '已作废'}
+                      <button class="mini-button" type="button" onclick={() => saveDefect(block)}>存记录</button>
+                    {/if}
                   </td>
                 </tr>
                 <tr class="stage-row">
-                  <td colspan="6">
+                  <td colspan="7">
                     <StageRail
                       activeIndex={blockStateStage(block.state)}
                       completedCount={block.state === '已刻成' || block.state === '已修版' ? 5 : block.state === '在刻' ? 3 : 1}
@@ -296,4 +367,100 @@
       <a class="button secondary full" use:link href="/carvers">查看刻工档与分布</a>
     </aside>
   </div>
+
+  {#if scrapTarget}
+    <section class="panel scrap-panel" data-testid="scrap-panel">
+      <div class="panel-heading">
+        <div>
+          <span class="section-kicker">作废版片</span>
+          <h2>{scrapTarget.blockName}（{scrapTarget.woodType} · {scrapTarget.thicknessMm}mm）</h2>
+        </div>
+        <button class="text-button" type="button" onclick={closeScrapPanel}>取消</button>
+      </div>
+      <p class="scrap-source">
+        木料来源：{sourceLabel(scrapTarget)}
+        {#if scrapTarget.sourceKind === '批次'}
+          ，可按原批退库、结存加回 1 张；
+        {:else}
+          ，历史旧版无原批，只能记损耗；
+        {/if}
+        作废后版片不再参与刻成与在刻统计。
+      </p>
+      <div class="scrap-form">
+        <label>
+          <span>木料去向</span>
+          <select data-testid="scrap-disposition" bind:value={scrapDisposition} disabled={scrapTarget.sourceKind !== '批次'}>
+            <option value="退库">按原批退库（{scrapTarget.sourceBatchNo ?? ''}）</option>
+            <option value="损耗">记损耗（不退料）</option>
+          </select>
+        </label>
+        <label class="wide">
+          <span>作废原因</span>
+          <textarea data-testid="scrap-reason" rows="2" bind:value={scrapReason} placeholder="如：开裂透底、走版重刻、虫蛀不可修"></textarea>
+        </label>
+      </div>
+      {#if notice}<p class="form-message">{notice}</p>{/if}
+      <div class="form-actions">
+        <button class="button danger" data-testid="scrap-confirm" type="button" onclick={confirmScrap}>确认作废</button>
+        <button class="button ghost" type="button" onclick={closeScrapPanel}>再看看</button>
+      </div>
+    </section>
+  {/if}
 {/if}
+
+<style>
+  .row-scrapped td {
+    opacity: 0.62;
+    background: rgba(169, 52, 39, 0.045);
+  }
+
+  .source-tag {
+    white-space: normal;
+    line-height: 1.4;
+  }
+
+  .source-batch {
+    color: #fff;
+    background: var(--ink-soft);
+  }
+
+  .source-legacy {
+    color: #79540e;
+    background: #f3dfad;
+  }
+
+  .danger-mini {
+    margin-left: 0.35rem;
+  }
+
+  .scrap-panel {
+    margin-top: 1.5rem;
+    border-color: rgba(169, 52, 39, 0.4);
+    background: linear-gradient(135deg, rgba(255, 250, 240, 0.98), rgba(247, 228, 224, 0.9));
+  }
+
+  .scrap-source {
+    margin: 0 0 1rem;
+    color: var(--ink-soft);
+    font-size: 0.85rem;
+    line-height: 1.7;
+  }
+
+  .scrap-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+    gap: 1rem;
+  }
+
+  .scrap-form label {
+    display: grid;
+    align-content: start;
+    gap: 0.42rem;
+  }
+
+  .scrap-form label > span {
+    color: var(--ink-soft);
+    font-size: 0.78rem;
+    font-weight: 800;
+  }
+</style>

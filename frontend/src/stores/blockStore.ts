@@ -14,6 +14,7 @@ const statsByDraft = derived(blockList, ($blocks) => {
   const stats: Record<string, DraftBlockStats> = {}
   for (const block of $blocks) {
     const current = stats[block.draftId] ?? { total: 0, carved: 0, rate: 0 }
+    if (block.state === '已作废') continue
     current.total += 1
     if (block.state === '已刻成' || block.state === '已修版') current.carved += 1
     current.rate = current.total === 0 ? 0 : Math.round((current.carved / current.total) * 100)

@@ -5,9 +5,11 @@
   import EmptyBox from '../components/common/EmptyBox.svelte'
   import { draftStore } from '../stores/draftStore'
   import { blockStore } from '../stores/blockStore'
+  import { woodStore } from '../stores/woodStore'
   import { useBlockOrder } from '../hooks/useBlockOrder'
   import type { DraftGenre, DraftStatus, Draft } from '../types/draft'
   import type { PrintBatch } from '../types/batch'
+  import type { WoodBatch, WoodShortfall } from '../types/wood'
   import { db } from '../utils/db'
 
   const { blocks: orderedBlocks, carvedRate } = useBlockOrder(null)
@@ -22,11 +24,35 @@
   let sizeCm = $state('')
   let paperNote = $state('')
   let status = $state<DraftStatus>('起稿')
+  let lineThicknessMm = $state(18)
+  let colorThicknessMm = $state(20)
   let formMessage = $state('')
   let batches = $state<PrintBatch[]>([])
+  let woodBatches = $state<WoodBatch[]>([])
+  let shortfalls = $state<WoodShortfall[]>([])
 
   const genres: DraftGenre[] = ['门神', '灶王', '戏出', '娃娃']
   const statuses: DraftStatus[] = ['起稿', '分版中', '刻版中', '可印']
+
+  const lineThicknessOptions = $derived(
+    [...new Set(woodBatches.filter((batch) => batch.woodType === '黄杨').map((batch) => batch.thicknessMm))].sort((a, b) => a - b),
+  )
+  const colorThicknessOptions = $derived(
+    [...new Set(woodBatches.filter((batch) => batch.woodType === '梨木').map((batch) => batch.thicknessMm))].sort((a, b) => a - b),
+  )
+
+  function remainingBySpec(woodType: '黄杨' | '梨木', thicknessMm: number): number {
+    return woodBatches
+      .filter((batch) => batch.woodType === woodType && batch.thicknessMm === thicknessMm)
+      .reduce((sum, batch) => sum + batch.remainingQty, 0)
+  }
+
+  const huangyangRemaining = $derived(
+    woodBatches.filter((batch) => batch.woodType === '黄杨').reduce((sum, batch) => sum + batch.remainingQty, 0),
+  )
+  const limuRemaining = $derived(
+    woodBatches.filter((batch) => batch.woodType === '梨木').reduce((sum, batch) => sum + batch.remainingQty, 0),
+  )
 
   const filteredDrafts = $derived(
     $draftStore.filter((draft) => {
@@ -46,11 +72,25 @@
   })
 
   onMount(() => {
-    void Promise.all([draftStore.load(), blockStore.load(), refreshBatches()])
+    void Promise.all([draftStore.load(), blockStore.load(), refreshBatches(), refreshWood()])
   })
 
   async function refreshBatches(): Promise<void> {
     batches = await db.batches.toArray()
+  }
+
+  async function refreshWood(): Promise<void> {
+    await woodStore.load()
+    woodBatches = await db.woodBatches.toArray()
+    shortfalls = await db.woodShortfalls.toArray()
+    shortfalls.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+    // 厚度选项若当前选择已不在台账，回落到首个可用规格
+    if (lineThicknessOptions.length > 0 && !lineThicknessOptions.includes(lineThicknessMm)) {
+      lineThicknessMm = lineThicknessOptions[0] ?? lineThicknessMm
+    }
+    if (colorThicknessOptions.length > 0 && !colorThicknessOptions.includes(colorThicknessMm)) {
+      colorThicknessMm = colorThicknessOptions[0] ?? colorThicknessMm
+    }
   }
 
   function firstBlockColor(draftId: string): number {
@@ -61,6 +101,8 @@
   function openForm(): void {
     showForm = true
     formMessage = ''
+    if (lineThicknessOptions.length > 0) lineThicknessMm = lineThicknessOptions[0] ?? 18
+    if (colorThicknessOptions.length > 0) colorThicknessMm = colorThicknessOptions[0] ?? 20
   }
 
   async function submitDraft(): Promise<void> {
@@ -69,34 +111,25 @@
       return
     }
 
-    const id = await draftStore.create({
+    const result = await woodStore.createDraftWithBlocks({
       title: title.trim(),
       genre,
       designer: designer.trim(),
       sizeCm: sizeCm.trim(),
       paperNote: paperNote.trim() || '待选纸后补充',
       status,
+      lineThicknessMm: Number(lineThicknessMm),
+      colorThicknessMm: Number(colorThicknessMm),
     })
 
-    const baseColorNames = ['墨线版', '黄版', '红版', '绿版'] as const
-    await db.transaction('rw', db.blocks, async () => {
-      for (let index = 0; index < baseColorNames.length; index += 1) {
-        const blockName = baseColorNames[index]
-        if (!blockName) continue
-        await db.blocks.add({
-          id: `block-${crypto.randomUUID()}`,
-          draftId: id,
-          blockName,
-          colorNo: index + 1,
-          woodType: index === 0 ? '黄杨' : '梨木',
-          thicknessMm: index === 0 ? 18 : 20,
-          carvedBy: '',
-          state: '待刻',
-          defectNote: '',
-        })
-      }
-    })
-    await blockStore.load()
+    if (!result.ok) {
+      await Promise.all([refreshWood(), draftStore.load(), blockStore.load()])
+      formMessage = `木料不足，已登记缺口（${result.shortfallItems.join('、')}）；未建立画稿与版片，请先到木料台账补料。`
+      return
+    }
+
+    await Promise.all([draftStore.load(), blockStore.load(), refreshWood()])
+    draftStore.select(result.draftId ?? null)
 
     title = ''
     genre = '门神'
@@ -134,13 +167,17 @@
     <h1>画稿总览</h1>
     <p>掌握每张年画的题材、分版进度与最近试印记录。</p>
   </div>
-  <button class="button primary" data-testid="new-draft" type="button" onclick={openForm}>新建画稿</button>
+  <div class="heading-actions">
+    <a class="button ghost" use:link href="/wood" data-testid="goto-wood">木料台账</a>
+    <button class="button primary" data-testid="new-draft" type="button" onclick={openForm}>新建画稿</button>
+  </div>
 </div>
 
 <section class="summary-strip" aria-label="档案概况">
   <div><span>在册画稿</span><strong data-testid="count-draft">{$draftStore.length}</strong></div>
   <div><span>全馆版片</span><strong>{$orderedBlocks.length}</strong></div>
-  <div><span>总体刻成率</span><strong>{$carvedRate}%</strong></div>
+  <div><span>黄杨结存</span><strong data-testid="count-huangyang">{huangyangRemaining}</strong><small>张</small></div>
+  <div><span>梨木结存</span><strong data-testid="count-limu">{limuRemaining}</strong><small>张</small></div>
   <div><span>登记批次</span><strong>{batches.length}</strong></div>
 </section>
 
@@ -183,7 +220,24 @@
           {#each statuses as item}<option value={item}>{item}</option>{/each}
         </select>
       </label>
+      <label>
+        <span>墨线版厚（黄杨）</span>
+        <select data-testid="field-lineThickness" bind:value={lineThicknessMm}>
+          {#each lineThicknessOptions as item}<option value={item}>{item} mm（结存 {remainingBySpec('黄杨', item)} 张）</option>{/each}
+        </select>
+      </label>
+      <label>
+        <span>套色版厚（梨木）</span>
+        <select data-testid="field-colorThickness" bind:value={colorThicknessMm}>
+          {#each colorThicknessOptions as item}<option value={item}>{item} mm（结存 {remainingBySpec('梨木', item)} 张）</option>{/each}
+        </select>
+      </label>
     </div>
+
+    <p class="stock-hint" data-testid="wood-requirement">
+      新稿一次开四块版：墨线版领黄杨 1 张、其余三块领梨木，按入库先后从最早合用批次领料；
+      当前规格需黄杨 {remainingBySpec('黄杨', lineThicknessMm)} 张可用、梨木 {remainingBySpec('梨木', colorThicknessMm)} 张可用，缺料只记缺口、不留半套记录。
+    </p>
 
     {#if formMessage}<p class="form-message">{formMessage}</p>{/if}
     <div class="form-actions">
@@ -263,3 +317,90 @@
     {/each}
   </section>
 {/if}
+
+{#if shortfalls.length > 0}
+  <section class="panel shortfall-panel" data-testid="shortfall-list">
+    <div class="panel-heading">
+      <div>
+        <span class="section-kicker">木料缺口</span>
+        <h2>未成套的领料缺口</h2>
+      </div>
+      <a class="text-button" use:link href="/wood" data-testid="goto-wood-shortfall">去木料台账补料</a>
+    </div>
+    <ul class="shortfall-list">
+      {#each shortfalls as item (item.id)}
+        <li data-testid="row-shortfall">
+          <div>
+            <strong>{item.draftTitle}</strong>
+            <small>{item.occurredAt.replace('T', ' ')}</small>
+          </div>
+          <span class="tag shortfall-tag">{item.items.join('、')}</span>
+          <p>{item.note}</p>
+        </li>
+      {/each}
+    </ul>
+  </section>
+{/if}
+
+<style>
+  .heading-actions {
+    display: flex;
+    gap: 0.75rem;
+  }
+
+  .stock-hint {
+    margin: 1rem 0 0;
+    padding: 0.65rem 0.8rem;
+    border-left: 3px solid var(--gold);
+    border-radius: var(--radius-sm);
+    background: rgba(187, 132, 45, 0.08);
+    color: var(--ink-soft);
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+
+  .shortfall-panel {
+    margin-top: 1.5rem;
+    border-color: rgba(169, 52, 39, 0.35);
+  }
+
+  .shortfall-list {
+    display: grid;
+    gap: 0.8rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .shortfall-list li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.3rem 1rem;
+    padding: 0.85rem 1rem;
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius-md);
+    background: rgba(169, 52, 39, 0.05);
+  }
+
+  .shortfall-list strong {
+    font-size: 0.92rem;
+  }
+
+  .shortfall-list small {
+    margin-left: 0.6rem;
+    color: var(--ink-muted);
+  }
+
+  .shortfall-tag {
+    color: #fff;
+    background: var(--cinnabar);
+  }
+
+  .shortfall-list p {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: var(--ink-muted);
+    font-size: 0.82rem;
+    line-height: 1.6;
+  }
+</style>

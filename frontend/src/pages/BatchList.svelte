@@ -94,13 +94,26 @@
   }
 
   async function exportArchive(): Promise<void> {
-    const [drafts, blocks, carvers, nodes] = await Promise.all([
+    const [drafts, blocks, carvers, nodes, woodBatches, woodMovements, woodShortfalls] = await Promise.all([
       db.drafts.toArray(),
       db.blocks.toArray(),
       db.carvers.toArray(),
       db.nodes.toArray(),
+      db.woodBatches.toArray(),
+      db.woodMovements.toArray(),
+      db.woodShortfalls.toArray(),
     ])
-    downloadJson('木版年画工序档案.json', { exportedAt: new Date().toISOString(), drafts, blocks, batches, carvers, nodes })
+    downloadJson('木版年画工序档案.json', {
+      exportedAt: new Date().toISOString(),
+      drafts,
+      blocks,
+      batches,
+      carvers,
+      nodes,
+      woodBatches,
+      woodMovements,
+      woodShortfalls,
+    })
   }
 </script>
 

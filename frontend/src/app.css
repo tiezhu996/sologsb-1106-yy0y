@@ -279,7 +279,7 @@ footer {
 
 .summary-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   gap: 1px;
   overflow: hidden;
   margin-bottom: 1.5rem;
@@ -518,6 +518,23 @@ textarea:focus {
 }
 
 .status-1 {
+  color: #79540e;
+  background: #f3dfad;
+}
+
+.state-已作废 {
+  color: #fff;
+  background: var(--cinnabar);
+  text-decoration: line-through;
+}
+
+.state-已刻成,
+.state-已修版 {
+  color: #fff;
+  background: var(--jade);
+}
+
+.state-在刻 {
   color: #79540e;
   background: #f3dfad;
 }

@@ -4,6 +4,7 @@ import type { Block } from '../types/block'
 import type { Carver } from '../types/carver'
 import type { PrintBatch } from '../types/batch'
 import type { ProcessNode } from '../types/node'
+import type { WoodBatch, WoodMovement, WoodShortfall } from '../types/wood'
 
 type StoredRecord = Record<string, unknown> & { schemaRev?: number }
 
@@ -13,6 +14,9 @@ class WoodprintDatabase extends Dexie {
   carvers!: Table<Carver, string>
   batches!: Table<PrintBatch, string>
   nodes!: Table<ProcessNode, string>
+  woodBatches!: Table<WoodBatch, string>
+  woodMovements!: Table<WoodMovement, string>
+  woodShortfalls!: Table<WoodShortfall, string>
 
   constructor() {
     super('gbwoodprint-db')
@@ -38,6 +42,35 @@ class WoodprintDatabase extends Dexie {
         for (const tableName of tableNames) {
           await transaction.table(tableName).toCollection().modify((record: StoredRecord) => {
             record.schemaRev = 2
+          })
+        }
+      })
+
+    this.version(3)
+      .stores({
+        drafts: 'id, genre, status, title, schemaRev',
+        blocks: 'id, draftId, colorNo, carvedBy, state, sourceKind, sourceBatchId, schemaRev',
+        carvers: 'id, specialty, skillLevel, name, schemaRev',
+        batches: 'id, draftId, batchNo, printedAt, schemaRev',
+        nodes: 'id, batchId, blockId, stage, seq, operator, schemaRev',
+        woodBatches: 'id, woodType, thicknessMm, receivedAt, batchNo, schemaRev',
+        woodMovements: 'id, movementType, woodBatchId, blockId, draftId, occurredAt, schemaRev',
+        woodShortfalls: 'id, draftTitle, occurredAt, schemaRev',
+      })
+      .upgrade(async (transaction) => {
+        const tableNames = [
+          'drafts',
+          'blocks',
+          'carvers',
+          'batches',
+          'nodes',
+          'woodBatches',
+          'woodMovements',
+          'woodShortfalls',
+        ] as const
+        for (const tableName of tableNames) {
+          await transaction.table(tableName).toCollection().modify((record: StoredRecord) => {
+            record.schemaRev = 3
           })
         }
       })
@@ -193,8 +226,63 @@ const nodes: ProcessNode[] = [
   { id: 'node-ll-02', blockId: 'block-ll-01', stage: '修版', seq: 2, operator: '秦木生', startedAt: '2025-12-11T14:00', durationMin: 110, note: '鱼鳞线加修，边缘改圆顺。' },
 ]
 
+const woodBatches: WoodBatch[] = [
+  {
+    id: 'wood-hy-2601',
+    batchNo: '黄杨-2601',
+    woodType: '黄杨',
+    thicknessMm: 18,
+    receivedQty: 6,
+    remainingQty: 6,
+    receivedAt: '2026-02-25',
+    supplierNote: '鄂西老料，阴干两年，供墨线版开料。',
+  },
+  {
+    id: 'wood-lm-2601',
+    batchNo: '梨木-2601',
+    woodType: '梨木',
+    thicknessMm: 20,
+    receivedQty: 12,
+    remainingQty: 12,
+    receivedAt: '2026-02-25',
+    supplierNote: '杜梨木，板面平顺，套色版主料。',
+  },
+  {
+    id: 'wood-lm-2602',
+    batchNo: '梨木-2602',
+    woodType: '梨木',
+    thicknessMm: 18,
+    receivedQty: 2,
+    remainingQty: 2,
+    receivedAt: '2026-03-08',
+    supplierNote: '薄套色版补料，存量不多需省用。',
+  },
+]
+
+const woodMovements: WoodMovement[] = woodBatches.map((batch) => ({
+  id: `woodmove-init-${batch.id}`,
+  movementType: '入库',
+  woodBatchId: batch.id,
+  woodBatchNo: batch.batchNo,
+  woodType: batch.woodType,
+  thicknessMm: batch.thicknessMm,
+  qty: batch.receivedQty,
+  occurredAt: `${batch.receivedAt}T08:00`,
+  refNote: '期初建账入库',
+}))
+
+const woodShortfalls: WoodShortfall[] = [
+  {
+    id: 'shortfall-demo-001',
+    draftTitle: '钟馗镇宅（未建成）',
+    occurredAt: '2026-03-12T10:20',
+    items: ['梨木 18mm 缺 1 张'],
+    note: '梨木-2602 仅结存 2 张，三块套色版未配齐，未建画稿与版片。',
+  },
+]
+
 function withSchemaRevision<T extends object>(records: T[]): Array<T & { schemaRev: number }> {
-  return records.map((record) => ({ ...record, schemaRev: 2 }))
+  return records.map((record) => ({ ...record, schemaRev: 3 }))
 }
 
 export const db = new WoodprintDatabase()
@@ -206,6 +294,9 @@ db.on('populate', () => {
     db.carvers.bulkAdd(withSchemaRevision(carvers)),
     db.batches.bulkAdd(withSchemaRevision(batches)),
     db.nodes.bulkAdd(withSchemaRevision(nodes)),
+    db.woodBatches.bulkAdd(withSchemaRevision(woodBatches)),
+    db.woodMovements.bulkAdd(withSchemaRevision(woodMovements)),
+    db.woodShortfalls.bulkAdd(withSchemaRevision(woodShortfalls)),
   ])
 })
 
@@ -214,13 +305,29 @@ export async function initializeDatabase(): Promise<void> {
   const draftCount = await db.drafts.count()
   if (draftCount > 0) return
 
-  await db.transaction('rw', db.drafts, db.blocks, db.carvers, db.batches, db.nodes, async () => {
-    await db.drafts.bulkPut(withSchemaRevision(drafts))
-    await db.blocks.bulkPut(withSchemaRevision(blocks))
-    await db.carvers.bulkPut(withSchemaRevision(carvers))
-    await db.batches.bulkPut(withSchemaRevision(batches))
-    await db.nodes.bulkPut(withSchemaRevision(nodes))
-  })
+  await db.transaction(
+    'rw',
+    [
+      db.drafts,
+      db.blocks,
+      db.carvers,
+      db.batches,
+      db.nodes,
+      db.woodBatches,
+      db.woodMovements,
+      db.woodShortfalls,
+    ],
+    async () => {
+      await db.drafts.bulkPut(withSchemaRevision(drafts))
+      await db.blocks.bulkPut(withSchemaRevision(blocks))
+      await db.carvers.bulkPut(withSchemaRevision(carvers))
+      await db.batches.bulkPut(withSchemaRevision(batches))
+      await db.nodes.bulkPut(withSchemaRevision(nodes))
+      await db.woodBatches.bulkPut(withSchemaRevision(woodBatches))
+      await db.woodMovements.bulkPut(withSchemaRevision(woodMovements))
+      await db.woodShortfalls.bulkPut(withSchemaRevision(woodShortfalls))
+    },
+  )
 }
 
 export type { WoodprintDatabase }
