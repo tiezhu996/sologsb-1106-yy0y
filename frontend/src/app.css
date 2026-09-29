@@ -310,6 +310,11 @@ footer {
   color: var(--ink);
 }
 
+.summary-strip small {
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+}
+
 .panel {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -1184,4 +1189,64 @@ textarea:focus {
 .order-buttons button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* 木料来源与作废处理 */
+.source-note {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--jade);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.scrap-info {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+}
+
+.tag.state-已作废 {
+  background: #e6dac8;
+  color: #655647;
+}
+
+.mini-button.danger {
+  color: #fff;
+  background: var(--cinnabar);
+}
+
+.scrap-row td {
+  padding: 0.5rem 0.8rem 1rem;
+  background: rgba(169, 52, 39, 0.04);
+}
+
+.scrap-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.scrap-panel > span {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.scrap-panel input {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+  min-height: 2.3rem;
+}
+
+.scrap-banner {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--cinnabar);
+  color: var(--cinnabar-dark);
+  background: rgba(169, 52, 39, 0.06);
+  font-size: 0.8rem;
+  line-height: 1.6;
 }

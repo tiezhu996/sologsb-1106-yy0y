@@ -9,12 +9,14 @@
   import { blockStore } from '../stores/blockStore'
   import { carverStore } from '../stores/carverStore'
   import { draftStore } from '../stores/draftStore'
+  import { woodStore } from '../stores/woodStore'
   import { useBlockOrder } from '../hooks/useBlockOrder'
   import { useCarverLoad } from '../hooks/useCarverLoad'
   import { validateColorSequence } from '../utils/seq'
   import { db } from '../utils/db'
-  import type { Block } from '../types/block'
+  import type { Block, ScrapMode } from '../types/block'
   import type { ProcessStage } from '../types/node'
+  import type { WoodBatch } from '../types/wood'
 
   const draftId = $derived($params?.id ?? '')
   const {
@@ -30,11 +32,22 @@
   let selectedCarverId = $state('')
   let notice = $state('')
   let lastSync = $state('刚刚')
+  let scrapConfirmFor = $state<string | null>(null)
+  let scrapNoteDraft = $state('')
 
   const draft = $derived($draftStore.find((item) => item.id === draftId) ?? null)
+  const batchMap = $derived(
+    $woodStore.reduce<Record<string, WoodBatch>>((map, batch) => {
+      map[batch.id] = batch
+      return map
+    }, {}),
+  )
 
-  onMount(() => {
-    void Promise.all([draftStore.load(), blockStore.load(), carverStore.load()])
+  onMount(async () => {
+    await Promise.all([draftStore.load(), blockStore.load(), carverStore.load(), woodStore.load()])
+    const currentDraftId = get(params)?.id ?? ''
+    const draftBlocks = get(blockStore).filter((item) => item.draftId === currentDraftId)
+    await woodStore.backfillLegacy(draftBlocks)
   })
 
   $effect(() => {
@@ -131,6 +144,23 @@
     lastSync = `${block.blockName}崩口记录已更新`
   }
 
+  function sourceLabel(block: Block): string {
+    if (block.woodBatchId) return batchMap[block.woodBatchId]?.batchNo ?? '批次已销'
+    return '历史无编号'
+  }
+
+  function openScrap(block: Block): void {
+    scrapConfirmFor = block.id
+    scrapNoteDraft = ''
+  }
+
+  async function confirmScrap(block: Block, mode: ScrapMode): Promise<void> {
+    await woodStore.scrapBlock(block, mode, scrapNoteDraft)
+    scrapConfirmFor = null
+    scrapNoteDraft = ''
+    lastSync = `${block.blockName}已作废（${mode}）`
+  }
+
   async function returnToStage(_index: number, stage: ProcessStage): Promise<void> {
     const block = $orderedBlocks[0]
     if (!block) return
@@ -223,6 +253,7 @@
                   <td>
                     <strong>{block.woodType}</strong>
                     <small>{block.thicknessMm} mm</small>
+                    <small class="source-note">{sourceLabel(block)}</small>
                   </td>
                   <td>
                     <select
@@ -238,8 +269,11 @@
                   </td>
                   <td>
                     <span class="tag state-{block.state}">{block.state}</span>
-                    {#if block.state !== '已刻成' && block.state !== '已修版'}
+                    {#if block.state === '已作废'}
+                      <small class="scrap-info">已作废 · {block.scrapMode}{#if block.scrapNote} · {block.scrapNote}{/if}</small>
+                    {:else if block.state !== '已刻成' && block.state !== '已修版'}
                       <button class="mini-button strong" type="button" onclick={() => markCarved(block)}>标刻成</button>
+                      <button class="mini-button danger" type="button" onclick={() => openScrap(block)}>作废</button>
                     {/if}
                   </td>
                   <td>
@@ -254,14 +288,33 @@
                 </tr>
                 <tr class="stage-row">
                   <td colspan="6">
-                    <StageRail
-                      activeIndex={blockStateStage(block.state)}
-                      completedCount={block.state === '已刻成' || block.state === '已修版' ? 5 : block.state === '在刻' ? 3 : 1}
-                      compact={true}
-                      onselect={block.id === $orderedBlocks[0]?.id ? returnToStage : undefined}
-                    />
+                    {#if block.state === '已作废'}
+                      <p class="scrap-banner">
+                        此版片已作废（{block.scrapMode}）{#if block.scrapNote}：{block.scrapNote}{/if}，木料{block.scrapMode === '退库' ? '已退回原批' : '已记损耗'}。
+                      </p>
+                    {:else}
+                      <StageRail
+                        activeIndex={blockStateStage(block.state)}
+                        completedCount={block.state === '已刻成' || block.state === '已修版' ? 5 : block.state === '在刻' ? 3 : 1}
+                        compact={true}
+                        onselect={block.id === $orderedBlocks[0]?.id ? returnToStage : undefined}
+                      />
+                    {/if}
                   </td>
                 </tr>
+                {#if scrapConfirmFor === block.id}
+                  <tr class="scrap-row">
+                    <td colspan="6">
+                      <div class="scrap-panel">
+                        <span>作废版片 · 木料处理</span>
+                        <input bind:value={scrapNoteDraft} placeholder="作废原因（开裂、变形等）" />
+                        <button class="mini-button strong" type="button" onclick={() => confirmScrap(block, '退库')}>按原批退库</button>
+                        <button class="mini-button danger" type="button" onclick={() => confirmScrap(block, '损耗')}>记损耗</button>
+                        <button class="text-button" type="button" onclick={() => (scrapConfirmFor = null)}>取消</button>
+                      </div>
+                    </td>
+                  </tr>
+                {/if}
               {/each}
             </tbody>
           </table>

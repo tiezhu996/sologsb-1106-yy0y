@@ -5,6 +5,7 @@
   import EmptyBox from '../components/common/EmptyBox.svelte'
   import { draftStore } from '../stores/draftStore'
   import { blockStore } from '../stores/blockStore'
+  import { woodStore } from '../stores/woodStore'
   import { useBlockOrder } from '../hooks/useBlockOrder'
   import type { DraftGenre, DraftStatus, Draft } from '../types/draft'
   import type { PrintBatch } from '../types/batch'
@@ -46,7 +47,7 @@
   })
 
   onMount(() => {
-    void Promise.all([draftStore.load(), blockStore.load(), refreshBatches()])
+    void Promise.all([draftStore.load(), blockStore.load(), woodStore.load(), refreshBatches()])
   })
 
   async function refreshBatches(): Promise<void> {
@@ -69,7 +70,7 @@
       return
     }
 
-    const id = await draftStore.create({
+    const result = await woodStore.createDraftWithBlocks({
       title: title.trim(),
       genre,
       designer: designer.trim(),
@@ -78,25 +79,16 @@
       status,
     })
 
-    const baseColorNames = ['墨线版', '黄版', '红版', '绿版'] as const
-    await db.transaction('rw', db.blocks, async () => {
-      for (let index = 0; index < baseColorNames.length; index += 1) {
-        const blockName = baseColorNames[index]
-        if (!blockName) continue
-        await db.blocks.add({
-          id: `block-${crypto.randomUUID()}`,
-          draftId: id,
-          blockName,
-          colorNo: index + 1,
-          woodType: index === 0 ? '黄杨' : '梨木',
-          thicknessMm: index === 0 ? 18 : 20,
-          carvedBy: '',
-          state: '待刻',
-          defectNote: '',
-        })
-      }
-    })
-    await blockStore.load()
+    if (!result.ok) {
+      const detail = (result.shortages ?? [])
+        .map((shortage) => `${shortage.woodType}缺${shortage.missing}张`)
+        .join('、')
+      formMessage = `木料不足，未开版（已登记缺口：${detail}）。请先到木料台账补料，不留半套记录。`
+      await woodStore.load()
+      return
+    }
+
+    await Promise.all([draftStore.load(), blockStore.load(), woodStore.load()])
 
     title = ''
     genre = '门神'

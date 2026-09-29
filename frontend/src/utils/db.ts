@@ -4,6 +4,7 @@ import type { Block } from '../types/block'
 import type { Carver } from '../types/carver'
 import type { PrintBatch } from '../types/batch'
 import type { ProcessNode } from '../types/node'
+import type { WoodBatch, WoodShortage } from '../types/wood'
 
 type StoredRecord = Record<string, unknown> & { schemaRev?: number }
 
@@ -13,6 +14,8 @@ class WoodprintDatabase extends Dexie {
   carvers!: Table<Carver, string>
   batches!: Table<PrintBatch, string>
   nodes!: Table<ProcessNode, string>
+  woodBatches!: Table<WoodBatch, string>
+  woodShortages!: Table<WoodShortage, string>
 
   constructor() {
     super('gbwoodprint-db')
@@ -41,6 +44,16 @@ class WoodprintDatabase extends Dexie {
           })
         }
       })
+
+    this.version(3).stores({
+      drafts: 'id, genre, status, title, schemaRev',
+      blocks: 'id, draftId, colorNo, carvedBy, state, woodBatchId, legacy, schemaRev',
+      carvers: 'id, specialty, skillLevel, name, schemaRev',
+      batches: 'id, draftId, batchNo, printedAt, schemaRev',
+      nodes: 'id, batchId, blockId, stage, seq, operator, schemaRev',
+      woodBatches: 'id, batchNo, woodType, stockedAt, schemaRev',
+      woodShortages: 'id, draftTitle, woodType, reportedAt, schemaRev',
+    })
   }
 }
 
@@ -197,6 +210,53 @@ function withSchemaRevision<T extends object>(records: T[]): Array<T & { schemaR
   return records.map((record) => ({ ...record, schemaRev: 2 }))
 }
 
+const woodBatches: WoodBatch[] = [
+  {
+    id: 'wood-huangyang-01',
+    batchNo: '黄杨-期初-01',
+    woodType: '黄杨',
+    thicknessMm: 18,
+    totalSheets: 3,
+    usedSheets: 0,
+    stockedAt: '2026-01-05',
+    supplier: '陕南木料行',
+    note: '期初盘点入库，纹理顺直，供墨线版。',
+  },
+  {
+    id: 'wood-huangyang-02',
+    batchNo: '黄杨-期初-02',
+    woodType: '黄杨',
+    thicknessMm: 18,
+    totalSheets: 3,
+    usedSheets: 0,
+    stockedAt: '2026-02-10',
+    supplier: '陕南木料行',
+    note: '补库一批，阴干足期。',
+  },
+  {
+    id: 'wood-limu-01',
+    batchNo: '梨木-期初-01',
+    woodType: '梨木',
+    thicknessMm: 20,
+    totalSheets: 6,
+    usedSheets: 0,
+    stockedAt: '2026-01-05',
+    supplier: '晋中果木行',
+    note: '期初盘点入库，供套色版。',
+  },
+  {
+    id: 'wood-limu-02',
+    batchNo: '梨木-期初-02',
+    woodType: '梨木',
+    thicknessMm: 20,
+    totalSheets: 6,
+    usedSheets: 0,
+    stockedAt: '2026-02-10',
+    supplier: '晋中果木行',
+    note: '补库一批，板面平整。',
+  },
+]
+
 export const db = new WoodprintDatabase()
 
 db.on('populate', () => {
@@ -206,6 +266,8 @@ db.on('populate', () => {
     db.carvers.bulkAdd(withSchemaRevision(carvers)),
     db.batches.bulkAdd(withSchemaRevision(batches)),
     db.nodes.bulkAdd(withSchemaRevision(nodes)),
+    db.woodBatches.bulkAdd(withSchemaRevision(woodBatches)),
+    db.woodShortages.bulkAdd(withSchemaRevision([])),
   ])
 })
 
@@ -214,13 +276,19 @@ export async function initializeDatabase(): Promise<void> {
   const draftCount = await db.drafts.count()
   if (draftCount > 0) return
 
-  await db.transaction('rw', db.drafts, db.blocks, db.carvers, db.batches, db.nodes, async () => {
-    await db.drafts.bulkPut(withSchemaRevision(drafts))
-    await db.blocks.bulkPut(withSchemaRevision(blocks))
-    await db.carvers.bulkPut(withSchemaRevision(carvers))
-    await db.batches.bulkPut(withSchemaRevision(batches))
-    await db.nodes.bulkPut(withSchemaRevision(nodes))
-  })
+  await db.transaction(
+    'rw',
+    [db.drafts, db.blocks, db.carvers, db.batches, db.nodes, db.woodBatches, db.woodShortages],
+    async () => {
+      await db.drafts.bulkPut(withSchemaRevision(drafts))
+      await db.blocks.bulkPut(withSchemaRevision(blocks))
+      await db.carvers.bulkPut(withSchemaRevision(carvers))
+      await db.batches.bulkPut(withSchemaRevision(batches))
+      await db.nodes.bulkPut(withSchemaRevision(nodes))
+      await db.woodBatches.bulkPut(withSchemaRevision(woodBatches))
+      await db.woodShortages.bulkPut(withSchemaRevision([]))
+    },
+  )
 }
 
 export type { WoodprintDatabase }
